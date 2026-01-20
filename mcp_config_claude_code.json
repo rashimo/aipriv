@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "privilege-escalation": {
+      "command": "python3",
+      "args": [
+        "/home/kali/aipriv/mcp_server.py"
+      ],
+      "env": {
+        "PRIVESC_CLIENT_HOST": "127.0.0.1",
+        "PRIVESC_CLIENT_PORT": "65432"
+      },
+      "disabled": false
+    }
+  }
+}

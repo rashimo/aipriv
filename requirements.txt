@@ -1,3 +1,7 @@
+# MCP Server Dependencies
+mcp>=1.1.2
+
+# Legacy Gemini API Dependencies (for iserver.py)
 annotated-types==0.7.0
 anyio==4.11.0
 cachetools==6.2.1
