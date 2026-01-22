@@ -511,8 +511,9 @@ async def list_resources() -> list[Resource]:
 @app.read_resource()
 async def read_resource(uri: str) -> str:
     """Read a resource by URI."""
+    uri_str = str(uri)  # Convert AnyUrl to string for comparison
 
-    if uri == "privesc://prompt":
+    if uri_str == "privesc://prompt":
         # Load the prompt from file
         try:
             prompt_path = os.path.join(os.path.dirname(__file__), "prompt.txt")
@@ -526,7 +527,7 @@ async def read_resource(uri: str) -> str:
         except Exception as e:
             return f"Error reading prompt: {str(e)}"
 
-    elif uri == "privesc://session/status":
+    elif uri_str == "privesc://session/status":
         # Return current session status
         if not client_manager:
             status = {
@@ -543,7 +544,7 @@ async def read_resource(uri: str) -> str:
             }
         return json.dumps(status, indent=2)
 
-    elif uri == "lateral://prompt":
+    elif uri_str == "lateral://prompt":
         # Load lateral movement prompt
         try:
             prompt_path = os.path.join(os.path.dirname(__file__), "lateral_prompt.txt")
@@ -554,7 +555,7 @@ async def read_resource(uri: str) -> str:
         except Exception as e:
             return f"Error reading lateral prompt: {str(e)}"
 
-    elif uri == "lateral://state":
+    elif uri_str == "lateral://state":
         # Return current lateral movement state
         state = {
             "summary": lateral_state.get_summary(),
@@ -566,7 +567,7 @@ async def read_resource(uri: str) -> str:
         return json.dumps(state, indent=2)
 
     else:
-        raise ValueError(f"Unknown resource: {uri}")
+        raise ValueError(f"Unknown resource: {uri_str}")
 
 
 @app.list_prompts()
