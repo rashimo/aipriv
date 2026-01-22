@@ -1,0 +1,66 @@
+version: '3.8'
+
+networks:
+  pentest_network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.10.10.0/24
+
+services:
+  # Initial foothold - SUID PATH vulnerability
+  target1_suid:
+    build:
+      context: ./containers/suidpath
+      dockerfile: Dockerfile
+    container_name: target1_suid
+    hostname: target1
+    networks:
+      pentest_network:
+        ipv4_address: 10.10.10.10
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    stdin_open: true
+    tty: true
+    cap_add:
+      - SYS_PTRACE
+    security_opt:
+      - seccomp:unconfined
+
+  # Lateral movement target 1 - SSH key reuse vulnerability
+  target2_sshkey:
+    build:
+      context: ./containers/sshkey
+      dockerfile: Dockerfile
+    container_name: target2_sshkey
+    hostname: target2
+    networks:
+      pentest_network:
+        ipv4_address: 10.10.10.20
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    stdin_open: true
+    tty: true
+    cap_add:
+      - SYS_PTRACE
+    security_opt:
+      - seccomp:unconfined
+
+  # Lateral movement target 2 - Weak sudo and cron job vulnerability
+  target3_sudocron:
+    build:
+      context: ./containers/sudocron
+      dockerfile: Dockerfile
+    container_name: target3_sudocron
+    hostname: target3
+    networks:
+      pentest_network:
+        ipv4_address: 10.10.10.30
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    stdin_open: true
+    tty: true
+    cap_add:
+      - SYS_PTRACE
+    security_opt:
+      - seccomp:unconfined

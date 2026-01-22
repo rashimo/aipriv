@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """
-MCP Server for Privilege Escalation Testing
+MCP Server for Privilege Escalation and Lateral Movement Testing
 
 This MCP server exposes command execution capabilities for authorized
 security testing and CTF scenarios. It communicates with a client
 running on a target system via sockets.
+
+Includes lateral movement support: host discovery tracking, credential
+harvesting, pivot management, and vulnerability scanning coordination.
 """
 
 import asyncio
@@ -13,7 +16,9 @@ import logging
 import os
 import socket
 import struct
-from typing import Any, Dict, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence
+from dataclasses import dataclass, field, asdict
+from datetime import datetime
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
@@ -39,6 +44,185 @@ logger = logging.getLogger("mcp-privesc-server")
 SHELL_RESET_COMMAND = "INITIATE_NEW_SHELL_SESSION"
 DEFAULT_TIMEOUT = 10
 DEFAULT_MCP_PORT = 65433  # Connect to proxy, not iclient directly
+
+
+# =============================================================================
+# Lateral Movement State Management
+# =============================================================================
+
+@dataclass
+class DiscoveredHost:
+    """Represents a discovered host during lateral movement."""
+    ip: str
+    hostname: Optional[str] = None
+    ports: List[int] = field(default_factory=list)
+    services: Dict[int, str] = field(default_factory=dict)
+    os_hint: Optional[str] = None
+    notes: str = ""
+    discovered_at: str = field(default_factory=lambda: datetime.now().isoformat())
+    access_level: str = "none"  # none, user, root
+    client_id: Optional[str] = None  # If we have an agent on this host
+
+
+@dataclass
+class Credential:
+    """Represents a harvested credential."""
+    username: str
+    secret: str  # password, key path, or hash
+    secret_type: str  # password, ssh_key, hash
+    source: str  # where it was found
+    target_hosts: List[str] = field(default_factory=list)  # hosts where it works
+    validated: bool = False
+    discovered_at: str = field(default_factory=lambda: datetime.now().isoformat())
+    notes: str = ""
+
+
+@dataclass
+class PivotConfig:
+    """Tracks current pivot configuration."""
+    pivot_host: Optional[str] = None
+    pivot_user: Optional[str] = None
+    pivot_method: str = "direct"  # direct, ssh_tunnel, socks_proxy
+    local_port: Optional[int] = None
+    tunnel_active: bool = False
+    notes: str = ""
+
+
+class LateralMovementState:
+    """Manages state for lateral movement operations."""
+
+    def __init__(self):
+        self.hosts: Dict[str, DiscoveredHost] = {}
+        self.credentials: List[Credential] = []
+        self.pivot: PivotConfig = PivotConfig()
+        self.movement_log: List[Dict[str, Any]] = []
+
+    def add_host(self, ip: str, hostname: str = None, ports: List[int] = None,
+                 services: Dict[int, str] = None, os_hint: str = None,
+                 notes: str = "") -> DiscoveredHost:
+        """Add or update a discovered host."""
+        if ip in self.hosts:
+            # Update existing host
+            host = self.hosts[ip]
+            if hostname:
+                host.hostname = hostname
+            if ports:
+                host.ports = list(set(host.ports + ports))
+            if services:
+                host.services.update(services)
+            if os_hint:
+                host.os_hint = os_hint
+            if notes:
+                host.notes = notes
+        else:
+            # Create new host
+            host = DiscoveredHost(
+                ip=ip,
+                hostname=hostname,
+                ports=ports or [],
+                services=services or {},
+                os_hint=os_hint,
+                notes=notes
+            )
+            self.hosts[ip] = host
+
+        self._log_action("host_discovered", {"ip": ip, "hostname": hostname})
+        return host
+
+    def get_hosts(self) -> List[Dict[str, Any]]:
+        """Get all discovered hosts as dicts."""
+        return [asdict(h) for h in self.hosts.values()]
+
+    def add_credential(self, username: str, secret: str, secret_type: str,
+                       source: str, notes: str = "") -> Credential:
+        """Add a harvested credential."""
+        cred = Credential(
+            username=username,
+            secret=secret,
+            secret_type=secret_type,
+            source=source,
+            notes=notes
+        )
+        self.credentials.append(cred)
+        self._log_action("credential_harvested", {
+            "username": username,
+            "type": secret_type,
+            "source": source
+        })
+        return cred
+
+    def get_credentials(self) -> List[Dict[str, Any]]:
+        """Get all credentials as dicts."""
+        return [asdict(c) for c in self.credentials]
+
+    def set_pivot(self, host: str, user: str = None, method: str = "direct",
+                  local_port: int = None, notes: str = "") -> PivotConfig:
+        """Set current pivot configuration."""
+        self.pivot = PivotConfig(
+            pivot_host=host,
+            pivot_user=user,
+            pivot_method=method,
+            local_port=local_port,
+            notes=notes
+        )
+        self._log_action("pivot_set", {"host": host, "method": method})
+        return self.pivot
+
+    def get_pivot(self) -> Dict[str, Any]:
+        """Get current pivot config as dict."""
+        return asdict(self.pivot)
+
+    def mark_host_accessed(self, ip: str, access_level: str, client_id: str = None):
+        """Mark a host as accessed with given privilege level."""
+        if ip in self.hosts:
+            self.hosts[ip].access_level = access_level
+            if client_id:
+                self.hosts[ip].client_id = client_id
+            self._log_action("host_accessed", {
+                "ip": ip,
+                "access_level": access_level,
+                "client_id": client_id
+            })
+
+    def mark_credential_validated(self, username: str, secret: str, target_host: str):
+        """Mark a credential as validated on a target host."""
+        for cred in self.credentials:
+            if cred.username == username and cred.secret == secret:
+                cred.validated = True
+                if target_host not in cred.target_hosts:
+                    cred.target_hosts.append(target_host)
+                self._log_action("credential_validated", {
+                    "username": username,
+                    "target": target_host
+                })
+                break
+
+    def _log_action(self, action: str, details: Dict[str, Any]):
+        """Log a lateral movement action."""
+        self.movement_log.append({
+            "timestamp": datetime.now().isoformat(),
+            "action": action,
+            "details": details
+        })
+
+    def get_log(self) -> List[Dict[str, Any]]:
+        """Get the movement log."""
+        return self.movement_log
+
+    def get_summary(self) -> Dict[str, Any]:
+        """Get a summary of lateral movement state."""
+        return {
+            "hosts_discovered": len(self.hosts),
+            "hosts_accessed": len([h for h in self.hosts.values() if h.access_level != "none"]),
+            "credentials_harvested": len(self.credentials),
+            "credentials_validated": len([c for c in self.credentials if c.validated]),
+            "current_pivot": self.pivot.pivot_host,
+            "actions_logged": len(self.movement_log)
+        }
+
+
+# Global lateral movement state
+lateral_state = LateralMovementState()
 
 
 class ClientConnectionManager:
@@ -306,6 +490,18 @@ async def list_resources() -> list[Resource]:
             name="Session Status",
             mimeType="application/json",
             description="Current session status and connection information"
+        ),
+        Resource(
+            uri="lateral://prompt",
+            name="Lateral Movement Prompt",
+            mimeType="text/plain",
+            description="Methodology for lateral movement, host discovery, and pivoting"
+        ),
+        Resource(
+            uri="lateral://state",
+            name="Lateral Movement State",
+            mimeType="application/json",
+            description="Current lateral movement state: hosts, credentials, pivot config"
         )
     ]
 
@@ -347,6 +543,28 @@ async def read_resource(uri: str) -> str:
             }
         return json.dumps(status, indent=2)
 
+    elif uri == "lateral://prompt":
+        # Load lateral movement prompt
+        try:
+            prompt_path = os.path.join(os.path.dirname(__file__), "lateral_prompt.txt")
+            with open(prompt_path, 'r') as f:
+                return f.read()
+        except FileNotFoundError:
+            return "Error: lateral_prompt.txt not found."
+        except Exception as e:
+            return f"Error reading lateral prompt: {str(e)}"
+
+    elif uri == "lateral://state":
+        # Return current lateral movement state
+        state = {
+            "summary": lateral_state.get_summary(),
+            "hosts": lateral_state.get_hosts(),
+            "credentials": lateral_state.get_credentials(),
+            "pivot": lateral_state.get_pivot(),
+            "recent_actions": lateral_state.get_log()[-10:]  # Last 10 actions
+        }
+        return json.dumps(state, indent=2)
+
     else:
         raise ValueError(f"Unknown resource: {uri}")
 
@@ -358,6 +576,11 @@ async def list_prompts() -> list[Prompt]:
         Prompt(
             name="privilege_escalation",
             description="Privilege escalation testing prompt with methodology and rules",
+            arguments=[]
+        ),
+        Prompt(
+            name="lateral_movement",
+            description="Lateral movement methodology with host discovery, credential harvesting, pivoting, and Nuclei scanning",
             arguments=[]
         )
     ]
@@ -379,6 +602,28 @@ async def get_prompt(name: str, arguments: dict[str, str] | None = None) -> GetP
 
         return GetPromptResult(
             description="Privilege escalation methodology and rules for security testing",
+            messages=[
+                PromptMessage(
+                    role="user",
+                    content=TextContent(
+                        type="text",
+                        text=prompt_content
+                    )
+                )
+            ]
+        )
+
+    elif name == "lateral_movement":
+        # Load the lateral movement prompt
+        try:
+            prompt_path = os.path.join(os.path.dirname(__file__), "lateral_prompt.txt")
+            with open(prompt_path, 'r') as f:
+                prompt_content = f.read()
+        except Exception as e:
+            prompt_content = f"Error loading lateral prompt: {str(e)}"
+
+        return GetPromptResult(
+            description="Lateral movement methodology for network pivoting and host discovery",
             messages=[
                 PromptMessage(
                     role="user",
@@ -493,6 +738,194 @@ async def list_tools() -> list[Tool]:
                     }
                 },
                 "required": ["client_id"]
+            }
+        ),
+        # === Lateral Movement Tools ===
+        Tool(
+            name="add_discovered_host",
+            description="Record a discovered host during network reconnaissance. Track IP, ports, services, and access level.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "ip": {
+                        "type": "string",
+                        "description": "IP address of the discovered host"
+                    },
+                    "hostname": {
+                        "type": "string",
+                        "description": "Hostname if known"
+                    },
+                    "ports": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": "List of open ports"
+                    },
+                    "services": {
+                        "type": "object",
+                        "description": "Map of port to service name (e.g., {22: 'ssh', 80: 'http'})"
+                    },
+                    "os_hint": {
+                        "type": "string",
+                        "description": "OS detection hint if available"
+                    },
+                    "notes": {
+                        "type": "string",
+                        "description": "Additional notes about the host"
+                    }
+                },
+                "required": ["ip"]
+            }
+        ),
+        Tool(
+            name="get_discovered_hosts",
+            description="Get all discovered hosts from lateral movement reconnaissance",
+            inputSchema={
+                "type": "object",
+                "properties": {}
+            }
+        ),
+        Tool(
+            name="add_credential",
+            description="Store a harvested credential (password, SSH key, hash) with its source",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "username": {
+                        "type": "string",
+                        "description": "Username for the credential"
+                    },
+                    "secret": {
+                        "type": "string",
+                        "description": "The password, key path, or hash"
+                    },
+                    "secret_type": {
+                        "type": "string",
+                        "enum": ["password", "ssh_key", "hash"],
+                        "description": "Type of secret"
+                    },
+                    "source": {
+                        "type": "string",
+                        "description": "Where the credential was found (e.g., '/etc/shadow', 'bash_history')"
+                    },
+                    "notes": {
+                        "type": "string",
+                        "description": "Additional notes"
+                    }
+                },
+                "required": ["username", "secret", "secret_type", "source"]
+            }
+        ),
+        Tool(
+            name="get_credentials",
+            description="Get all harvested credentials",
+            inputSchema={
+                "type": "object",
+                "properties": {}
+            }
+        ),
+        Tool(
+            name="validate_credential",
+            description="Mark a credential as validated on a specific target host",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "username": {
+                        "type": "string",
+                        "description": "Username"
+                    },
+                    "secret": {
+                        "type": "string",
+                        "description": "The secret that was validated"
+                    },
+                    "target_host": {
+                        "type": "string",
+                        "description": "Host IP where the credential worked"
+                    }
+                },
+                "required": ["username", "secret", "target_host"]
+            }
+        ),
+        Tool(
+            name="mark_host_accessed",
+            description="Mark a host as accessed with a given privilege level",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "ip": {
+                        "type": "string",
+                        "description": "IP of the accessed host"
+                    },
+                    "access_level": {
+                        "type": "string",
+                        "enum": ["user", "root"],
+                        "description": "Level of access obtained"
+                    },
+                    "client_id": {
+                        "type": "string",
+                        "description": "Client ID if an agent was deployed"
+                    }
+                },
+                "required": ["ip", "access_level"]
+            }
+        ),
+        Tool(
+            name="set_pivot_host",
+            description="Set the current pivot point for network access",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "host": {
+                        "type": "string",
+                        "description": "IP/hostname of the pivot host"
+                    },
+                    "user": {
+                        "type": "string",
+                        "description": "Username on the pivot host"
+                    },
+                    "method": {
+                        "type": "string",
+                        "enum": ["direct", "ssh_tunnel", "socks_proxy"],
+                        "description": "Pivoting method being used"
+                    },
+                    "local_port": {
+                        "type": "integer",
+                        "description": "Local port for tunnel/proxy if applicable"
+                    },
+                    "notes": {
+                        "type": "string",
+                        "description": "Additional pivot configuration notes"
+                    }
+                },
+                "required": ["host"]
+            }
+        ),
+        Tool(
+            name="get_pivot_status",
+            description="Get current pivot configuration and status",
+            inputSchema={
+                "type": "object",
+                "properties": {}
+            }
+        ),
+        Tool(
+            name="get_lateral_summary",
+            description="Get a summary of lateral movement progress: hosts discovered, credentials harvested, access obtained",
+            inputSchema={
+                "type": "object",
+                "properties": {}
+            }
+        ),
+        Tool(
+            name="get_movement_log",
+            description="Get the log of all lateral movement actions taken",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "integer",
+                        "description": "Number of recent entries to return (default: 20)"
+                    }
+                }
             }
         )
     ]
@@ -655,6 +1088,193 @@ async def call_tool(name: str, arguments: Any) -> Sequence[TextContent | ImageCo
 
             result = client_manager.set_client(client_id)
             return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+        # === Lateral Movement Tool Handlers ===
+
+        elif name == "add_discovered_host":
+            ip = arguments.get("ip")
+            if not ip:
+                return [TextContent(
+                    type="text",
+                    text=json.dumps({"status": "error", "message": "ip is required"}, indent=2)
+                )]
+
+            host = lateral_state.add_host(
+                ip=ip,
+                hostname=arguments.get("hostname"),
+                ports=arguments.get("ports", []),
+                services=arguments.get("services", {}),
+                os_hint=arguments.get("os_hint"),
+                notes=arguments.get("notes", "")
+            )
+            return [TextContent(
+                type="text",
+                text=json.dumps({
+                    "status": "success",
+                    "message": f"Host {ip} added/updated",
+                    "host": asdict(host)
+                }, indent=2)
+            )]
+
+        elif name == "get_discovered_hosts":
+            hosts = lateral_state.get_hosts()
+            return [TextContent(
+                type="text",
+                text=json.dumps({
+                    "status": "success",
+                    "count": len(hosts),
+                    "hosts": hosts
+                }, indent=2)
+            )]
+
+        elif name == "add_credential":
+            username = arguments.get("username")
+            secret = arguments.get("secret")
+            secret_type = arguments.get("secret_type")
+            source = arguments.get("source")
+
+            if not all([username, secret, secret_type, source]):
+                return [TextContent(
+                    type="text",
+                    text=json.dumps({
+                        "status": "error",
+                        "message": "username, secret, secret_type, and source are required"
+                    }, indent=2)
+                )]
+
+            cred = lateral_state.add_credential(
+                username=username,
+                secret=secret,
+                secret_type=secret_type,
+                source=source,
+                notes=arguments.get("notes", "")
+            )
+            return [TextContent(
+                type="text",
+                text=json.dumps({
+                    "status": "success",
+                    "message": f"Credential for {username} stored",
+                    "credential": asdict(cred)
+                }, indent=2)
+            )]
+
+        elif name == "get_credentials":
+            creds = lateral_state.get_credentials()
+            return [TextContent(
+                type="text",
+                text=json.dumps({
+                    "status": "success",
+                    "count": len(creds),
+                    "credentials": creds
+                }, indent=2)
+            )]
+
+        elif name == "validate_credential":
+            username = arguments.get("username")
+            secret = arguments.get("secret")
+            target_host = arguments.get("target_host")
+
+            if not all([username, secret, target_host]):
+                return [TextContent(
+                    type="text",
+                    text=json.dumps({
+                        "status": "error",
+                        "message": "username, secret, and target_host are required"
+                    }, indent=2)
+                )]
+
+            lateral_state.mark_credential_validated(username, secret, target_host)
+            return [TextContent(
+                type="text",
+                text=json.dumps({
+                    "status": "success",
+                    "message": f"Credential for {username} validated on {target_host}"
+                }, indent=2)
+            )]
+
+        elif name == "mark_host_accessed":
+            ip = arguments.get("ip")
+            access_level = arguments.get("access_level")
+
+            if not ip or not access_level:
+                return [TextContent(
+                    type="text",
+                    text=json.dumps({
+                        "status": "error",
+                        "message": "ip and access_level are required"
+                    }, indent=2)
+                )]
+
+            lateral_state.mark_host_accessed(
+                ip=ip,
+                access_level=access_level,
+                client_id=arguments.get("client_id")
+            )
+            return [TextContent(
+                type="text",
+                text=json.dumps({
+                    "status": "success",
+                    "message": f"Host {ip} marked as accessed with {access_level} privileges"
+                }, indent=2)
+            )]
+
+        elif name == "set_pivot_host":
+            host = arguments.get("host")
+            if not host:
+                return [TextContent(
+                    type="text",
+                    text=json.dumps({"status": "error", "message": "host is required"}, indent=2)
+                )]
+
+            pivot = lateral_state.set_pivot(
+                host=host,
+                user=arguments.get("user"),
+                method=arguments.get("method", "direct"),
+                local_port=arguments.get("local_port"),
+                notes=arguments.get("notes", "")
+            )
+            return [TextContent(
+                type="text",
+                text=json.dumps({
+                    "status": "success",
+                    "message": f"Pivot set to {host}",
+                    "pivot": asdict(pivot)
+                }, indent=2)
+            )]
+
+        elif name == "get_pivot_status":
+            pivot = lateral_state.get_pivot()
+            return [TextContent(
+                type="text",
+                text=json.dumps({
+                    "status": "success",
+                    "pivot": pivot
+                }, indent=2)
+            )]
+
+        elif name == "get_lateral_summary":
+            summary = lateral_state.get_summary()
+            return [TextContent(
+                type="text",
+                text=json.dumps({
+                    "status": "success",
+                    "summary": summary
+                }, indent=2)
+            )]
+
+        elif name == "get_movement_log":
+            limit = arguments.get("limit", 20)
+            log = lateral_state.get_log()
+            recent = log[-limit:] if len(log) > limit else log
+            return [TextContent(
+                type="text",
+                text=json.dumps({
+                    "status": "success",
+                    "total_actions": len(log),
+                    "showing": len(recent),
+                    "log": recent
+                }, indent=2)
+            )]
 
         else:
             return [TextContent(

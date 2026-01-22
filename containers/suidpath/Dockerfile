@@ -7,8 +7,8 @@ LABEL maintainer="youremail@example.com"
 # Set environment variables to avoid prompts during the build                                                                                                                                                                                                  
 ENV DEBIAN_FRONTEND=noninteractive                                                                                                                                                                                                                             
                                                                                                                                                                                                                                                                
-# Update and install necessary packages, including cron                                                                                                                                                                                                        
-RUN apt-get update && apt-get install -y \                                                                                                                                                                                                                     
+# Update and install necessary packages, including cron and network tools
+RUN apt-get update && apt-get install -y \
     sudo \
     curl \
     vim \
@@ -21,6 +21,12 @@ RUN apt-get update && apt-get install -y \
     git \
     bash-completion \
     cron \
+    net-tools \
+    iputils-ping \
+    nmap \
+    openssh-client \
+    sshpass \
+    netcat \
     && rm -rf /var/lib/apt/lists/*
 
 # Create a non-privileged user
@@ -43,7 +49,21 @@ RUN gcc /tmp/vuln.c -o /usr/local/bin/vuln_app && \
     rm /tmp/vuln.c
 
 # Create the flag
-RUN echo 'this is your flag' > /root/flag.txt
+RUN echo 'FLAG{suid_path_privesc_complete}' > /root/flag.txt
+
+# Add pivot credentials (only accessible after privesc to root)
+RUN echo "# Dev Server Backup Credentials" > /root/.server_credentials && \
+    echo "# Created by sysadmin for emergency access" >> /root/.server_credentials && \
+    echo "Host: 10.10.10.20" >> /root/.server_credentials && \
+    echo "User: devuser" >> /root/.server_credentials && \
+    echo "Pass: devpass123" >> /root/.server_credentials && \
+    chmod 600 /root/.server_credentials
+
+# Add network hints for lateral movement
+RUN echo "# Internal Hosts" > /home/ctfuser/network_notes.txt && \
+    echo "10.10.10.20 - dev server (target2)" >> /home/ctfuser/network_notes.txt && \
+    echo "10.10.10.30 - admin server (target3)" >> /home/ctfuser/network_notes.txt && \
+    chown ctfuser:ctfuser /home/ctfuser/network_notes.txt
 
 # Set the working directory
 WORKDIR /home/ctfuser
