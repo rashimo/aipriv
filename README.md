@@ -2,6 +2,22 @@
 
 AI-driven privilege escalation testing for authorized security testing and CTF challenges.
 
+---
+
+## DISCLAIMER
+
+**FOR EDUCATIONAL AND AUTHORIZED SECURITY TESTING ONLY.**
+
+This tool is provided "as-is" without warranty. The authors assume NO responsibility or liability for any misuse or damage caused by this software. By using this tool, you agree that:
+
+1. You have **explicit authorization** to test any target system
+2. You are **solely responsible** for your actions and any consequences
+3. You will comply with all applicable laws and regulations
+
+**Unauthorized access to computer systems is illegal.** The authors are not responsible for any illegal or unethical use of this software.
+
+---
+
 ## Quick Start
 
 ```bash
